@@ -22,6 +22,7 @@
 #include "Tracking.h"
 
 #include<opencv2/core/core.hpp>
+#include<opencv2/core/eigen.hpp>
 #include<opencv2/features2d/features2d.hpp>
 
 #include"ORBmatcher.h"
@@ -29,13 +30,16 @@
 #include"Converter.h"
 #include"Map.h"
 #include"Initializer.h"
+#include<unistd.h>
 
 #include"Optimizer.h"
 #include"PnPsolver.h"
 
 #include<iostream>
-
+#include<unistd.h>
 #include<mutex>
+#include <Eigen/Dense>
+#include <math.h>
 
 
 using namespace std;
@@ -168,6 +172,7 @@ cv::Mat Tracking::GrabImageStereo(const cv::Mat &imRectLeft, const cv::Mat &imRe
 {
     mImGray = imRectLeft;
     cv::Mat imGrayRight = imRectRight;
+    vector<Eigen::Matrix<float, 4, 4>, Eigen::aligned_allocator<Eigen::Matrix<float, 4, 4>>> empty;
 
     if(mImGray.channels()==3)
     {
@@ -198,7 +203,7 @@ cv::Mat Tracking::GrabImageStereo(const cv::Mat &imRectLeft, const cv::Mat &imRe
 
     mCurrentFrame = Frame(mImGray,imGrayRight,timestamp,mpORBextractorLeft,mpORBextractorRight,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth);
 
-    Track();
+    Track(empty);
 
     return mCurrentFrame.mTcw.clone();
 }
@@ -208,6 +213,7 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
 {
     mImGray = imRGB;
     cv::Mat imDepth = imD;
+    vector<Eigen::Matrix<float, 4, 4>, Eigen::aligned_allocator<Eigen::Matrix<float, 4, 4>>> empty;
 
     if(mImGray.channels()==3)
     {
@@ -229,15 +235,16 @@ cv::Mat Tracking::GrabImageRGBD(const cv::Mat &imRGB,const cv::Mat &imD, const d
 
     mCurrentFrame = Frame(mImGray,imDepth,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth);
 
-    Track();
+    Track(empty);
 
     return mCurrentFrame.mTcw.clone();
 }
 
 
-cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp)
+cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp, const vector<Eigen::Matrix<float, 4, 4>, Eigen::aligned_allocator<Eigen::Matrix<float, 4, 4>>> odometry)
 {
     mImGray = im;
+
 
     if(mImGray.channels()==3)
     {
@@ -259,12 +266,12 @@ cv::Mat Tracking::GrabImageMonocular(const cv::Mat &im, const double &timestamp)
     else
         mCurrentFrame = Frame(mImGray,timestamp,mpORBextractorLeft,mpORBVocabulary,mK,mDistCoef,mbf,mThDepth);
 
-    Track();
+    Track(odometry);
 
     return mCurrentFrame.mTcw.clone();
 }
 
-void Tracking::Track()
+void Tracking::Track(vector<Eigen::Matrix<float, 4, 4>, Eigen::aligned_allocator<Eigen::Matrix<float, 4, 4>>> odometry)
 {
     if(mState==NO_IMAGES_YET)
     {
@@ -306,13 +313,13 @@ void Tracking::Track()
 
                 if(mVelocity.empty() || mCurrentFrame.mnId<mnLastRelocFrameId+2)
                 {
-                    bOK = TrackReferenceKeyFrame();
+                    bOK = TrackReferenceKeyFrame(odometry);
                 }
                 else
                 {
-                    bOK = TrackWithMotionModel();
+                    bOK = TrackWithMotionModel(odometry);
                     if(!bOK)
-                        bOK = TrackReferenceKeyFrame();
+                        bOK = TrackReferenceKeyFrame(odometry);
                 }
             }
             else
@@ -336,11 +343,11 @@ void Tracking::Track()
 
                     if(!mVelocity.empty())
                     {
-                        bOK = TrackWithMotionModel();
+                        bOK = TrackWithMotionModel(odometry);
                     }
                     else
                     {
-                        bOK = TrackReferenceKeyFrame();
+                        bOK = TrackReferenceKeyFrame(odometry);
                     }
                 }
                 else
@@ -358,7 +365,7 @@ void Tracking::Track()
                     cv::Mat TcwMM;
                     if(!mVelocity.empty())
                     {
-                        bOKMM = TrackWithMotionModel();
+                        bOKMM = TrackWithMotionModel(odometry);
                         vpMPsMM = mCurrentFrame.mvpMapPoints;
                         vbOutMM = mCurrentFrame.mvbOutlier;
                         TcwMM = mCurrentFrame.mTcw.clone();
@@ -754,7 +761,7 @@ void Tracking::CheckReplacedInLastFrame()
 }
 
 
-bool Tracking::TrackReferenceKeyFrame()
+bool Tracking::TrackReferenceKeyFrame(vector<Eigen::Matrix<float, 4, 4>, Eigen::aligned_allocator<Eigen::Matrix<float, 4, 4>>> odometry)
 {
     // Compute Bag of Words vector
     mCurrentFrame.ComputeBoW();
@@ -770,7 +777,28 @@ bool Tracking::TrackReferenceKeyFrame()
         return false;
 
     mCurrentFrame.mvpMapPoints = vpMapPointMatches;
-    mCurrentFrame.SetPose(mLastFrame.mTcw);
+    // change
+    // mCurrentFrame.SetPose(mLastFrame.mTcw);
+    cout << "ref" << endl;
+    int id_ = mCurrentFrame.mnId;
+    // cout << id_ << endl;
+    Eigen::Matrix<float, 4, 4> mTC_tmp;
+    Eigen::Matrix<float, 4, 4> LastFrameE;
+    // Eigen::Matrix<double, 3, 4> curr;
+    Eigen::Matrix<float, 4, 4> curr44;
+    cv::cv2eigen(mLastFrame.mTcw.inv(), LastFrameE);
+    mTC_tmp.block(0,0,4,4) = LastFrameE;
+    // mTC_tmp(3,3) = 1.0;
+
+    // cout<<mTC_tmp<<endl;
+    curr44 = mTC_tmp * odometry[id_ - 1]; // right
+    // curr44 = odometry[id_] * mTC_tmp;
+    // curr = curr44.block(0,0,3,4);
+    // cout << 'Ref: ' << curr << endl;
+
+    cv::Mat curr_cv = cv::Mat::zeros(4,4,CV_64F);
+    cv::eigen2cv(curr44, curr_cv);
+    mCurrentFrame.SetPose(curr_cv.clone());
 
     Optimizer::PoseOptimization(&mCurrentFrame);
 
@@ -864,7 +892,7 @@ void Tracking::UpdateLastFrame()
     }
 }
 
-bool Tracking::TrackWithMotionModel()
+bool Tracking::TrackWithMotionModel(vector<Eigen::Matrix<float, 4, 4>, Eigen::aligned_allocator<Eigen::Matrix<float, 4, 4>>> odometry)
 {
     ORBmatcher matcher(0.9,true);
 
@@ -872,10 +900,37 @@ bool Tracking::TrackWithMotionModel()
     // Create "visual odometry" points if in Localization Mode
     UpdateLastFrame();
 
-    mCurrentFrame.SetPose(mVelocity*mLastFrame.mTcw);
+    cout << "motion" << endl;
+    // mCurrentFrame.SetPose(mVelocity*mLastFrame.mTcw);
+    int id_ = mCurrentFrame.mnId;
+    cout << id_ << endl;
+    Eigen::Matrix<float, 4, 4> mTC_tmp;
+    Eigen::Matrix<float, 4, 4> LastFrameE;
+    // Eigen::Matrix<double, 3, 4> curr;
+    Eigen::Matrix<float, 4, 4> curr44;
+    cv::cv2eigen(mLastFrame.mTcw.inv(), LastFrameE);
+    mTC_tmp.block(0,0,4,4) = LastFrameE;
+    // mTC_tmp(3,3) = 1.0;
+
+    // cout<<mTC_tmp<<endl;
+    // curr44 = mTC_tmp * odometry[id_];
+    // std::cout << "HI1" << std::endl;
+    // curr44 = odometry[id_] * mTC_tmp; 
+    curr44 = mTC_tmp * odometry[id_ - 1]; // left
+    // std::cout << "HI2" << std::endl;
+    // curr = curr44.block(0,0,3,4);
+    // cout << 'Ref: ' << curr << endl;
+
+    cv::Mat curr_cv = cv::Mat::zeros(4,4,CV_64F);
+    // std::cout << "HI3" << std::endl;
+    cv::eigen2cv(curr44, curr_cv);
+    // std::cout << "HI4" << std::endl;
+    mCurrentFrame.SetPose(curr_cv.clone());
+    // std::cout << "HI5" << std::endl;
 
     fill(mCurrentFrame.mvpMapPoints.begin(),mCurrentFrame.mvpMapPoints.end(),static_cast<MapPoint*>(NULL));
 
+    // std::cout << "After fill" << std::endl;
     // Project points seen in previous frame
     int th;
     if(mSensor!=System::STEREO)
@@ -883,6 +938,7 @@ bool Tracking::TrackWithMotionModel()
     else
         th=7;
     int nmatches = matcher.SearchByProjection(mCurrentFrame,mLastFrame,th,mSensor==System::MONOCULAR);
+
 
     // If few matches, uses a wider window search
     if(nmatches<20)
@@ -896,6 +952,7 @@ bool Tracking::TrackWithMotionModel()
 
     // Optimize frame pose with all matches
     Optimizer::PoseOptimization(&mCurrentFrame);
+    // std::cout << "pose optimization" << std::endl;
 
     // Discard outliers
     int nmatchesMap = 0;
@@ -923,6 +980,7 @@ bool Tracking::TrackWithMotionModel()
         mbVO = nmatchesMap<10;
         return nmatches>20;
     }
+    // std::cout << "before return" << endl;
 
     return nmatchesMap>=10;
 }

@@ -27,6 +27,7 @@
 
 #include "KeyFrame.h"
 #include "ORBmatcher.h"
+#include<unistd.h>
 
 #include "Thirdparty/DBoW2/DUtils/Random.h"
 
